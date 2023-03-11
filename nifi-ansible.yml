@@ -1,0 +1,97 @@
+#ansible playbook to update nifi server self signed certs
+#TODO: need to modularize
+#TODO: need to externalize the paths and software versions
+- name: ssl updation
+  hosts: lower
+  tasks:
+  - name: reading old nifi.properties
+    slurp:
+      src: /app/software/nifi-1.12.0/conf/nifi.properties
+    register: nifi_properties
+  - name: convert old property file
+    set_fact:
+      content: "{{ nifi_properties.content | b64decode }}"
+  - name: find host line
+    set_fact:
+      host_line: "{{ content | regex_search('(https.host)+.*') }}"
+  - name: find host
+    set_fact:
+      host: "{{ host_line.split('=')[1] }}"
+  - name: find key store password line
+    set_fact:
+      keystorePasswd_line: "{{ content | regex_search('(keystorePasswd=)+.*') }}"
+  - name: find key store password
+    set_fact:
+      keystorePasswd: "{{ keystorePasswd_line.split('=')[1] }}"
+  - name: find trust store password line
+    set_fact:
+      truststorePasswd_line: "{{ content | regex_search('(truststorePasswd=)+.*') }}"
+  - name: find trust store password
+    set_fact:
+      truststorePasswd: "{{ truststorePasswd_line.split('=')[1] }}"
+
+  - name: execute tls-toolkit.sh
+    shell:
+      chdir: /app/platform/nifi-toolkit-1.15.3
+      cmd: "./bin/tls-toolkit.sh standalone -n {{ host }} -o /app/software/nifi-1.12.0 -O"
+
+  - name: reading new nifi.properties
+    become: yes
+    become_user: root
+    slurp:
+      src: "/app/software/nifi-1.12.0/{{ host }}/nifi.properties"
+    register: new_nifi_properties
+  - name: convert new nifi.properties
+    set_fact:
+      new_content: "{{ new_nifi_properties.content | b64decode }}"
+  - name: find key store password line in new nifi.properties
+    set_fact:
+      new_keystorePasswd_line: "{{ new_content | regex_search('(keystorePasswd=)+.*') }}"
+  - name: find key store password in new nifi.properties
+    set_fact:
+      new_keystorePasswd: "{{ new_keystorePasswd_line.split('=')[1] }}"
+  - name: find trust store password line in new nifi.properties
+    set_fact:
+      new_truststorePasswd_line: "{{ new_content | regex_search('(truststorePasswd=)+.*') }}"
+  - name: find trust store password in new nifi.properties
+    set_fact:
+      new_truststorePasswd: "{{ new_truststorePasswd_line.split('=')[1] }}"
+
+  - name: copy keystore.jks
+    copy:
+      remote_src: true
+      src: "/app/software/nifi-1.12.0/{{ host }}/keystore.jks"
+      dest: /app/software/nifi-1.12.0/certs/keystore.jks
+      backup: true
+  - name: copy truststore.jks
+    copy:
+      remote_src: true
+      src: "/app/software/nifi-1.12.0/{{ host }}/truststore.jks"
+      dest: /app/software/nifi-1.12.0/certs/truststore.jks
+      backup: true
+
+  - name: replace key store password
+    replace:
+      path: /app/software/nifi-1.12.0/conf/nifi.properties
+      regexp: '(keystorePasswd=).*'
+      replace: "keystorePasswd={{ new_keystorePasswd }}"
+      backup: true
+  - name: replace key password
+    replace:
+      path: /app/software/nifi-1.12.0/conf/nifi.properties
+      regexp: '(keyPasswd=).*'
+      replace: "keyPasswd={{ new_keystorePasswd }}"
+  - name: replace trust store password
+    replace:
+      path: /app/software/nifi-1.12.0/conf/nifi.properties
+      regexp: '(truststorePasswd=).*'
+      replace: "truststorePasswd={{ new_truststorePasswd }}"
+
+  - name: restart server
+    shell:
+      chdir: /app/software/nifi-1.12.0/
+      cmd: ./bin/nifi.sh restart
+    register: restart_output
+  - name: debug output
+    debug:
+      var: restart_output
